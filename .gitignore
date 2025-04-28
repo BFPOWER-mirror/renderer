@@ -1,0 +1,5 @@
+*.bin
+/renderer/res/shaders/compiled/
+/run.sh
+/examples.bin.dSYM/
+/bin/
