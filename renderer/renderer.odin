@@ -6,8 +6,8 @@ import "core:log"
 import "core:os"
 import "core:strings"
 import clay "library:clay"
-import sdl_ttf "library:sdl3_ttf"
 import sdl "vendor:sdl3"
+import sdl_ttf "vendor:sdl3/ttf"
 
 when ODIN_OS == .Darwin {
 	SHADER_TYPE :: sdl.GPUShaderFormat{.MSL}
@@ -151,7 +151,7 @@ prepare :: proc(
 				text_pipeline.cache[render_command.id] = sdl_text
 			} else {
 				// Update text with c_string
-				sdl_ttf.SetTextString(sdl_text, c_text, 0)
+				_ = sdl_ttf.SetTextString(sdl_text, c_text, 0)
 			}
 
 			data := sdl_ttf.GetGPUTextDrawData(sdl_text)
@@ -164,7 +164,7 @@ prepare :: proc(
 					Text{sdl_text, {bounds.x, bounds.y}, f32_color(render_data.textColor)},
 				)
 				layer.text_instance_len += 1
-				layer.text_vertex_len += u32(data.num_verticies)
+				layer.text_vertex_len += u32(data.num_vertices)
 				layer.text_index_len += u32(data.num_indices)
 				scissor.text_len += 1
 			}
@@ -194,7 +194,7 @@ prepare :: proc(
 			cr := render_data.cornerRadius
 			quad := Quad {
 				position_scale = {bounds.x, bounds.y, bounds.width, bounds.height},
-				corner_radii   = {cr.topLeft, cr.topRight, cr.bottomRight, cr.bottomLeft},
+				corner_radii   = {cr.bottomRight, cr.topRight, cr.bottomLeft, cr.topLeft},
 				color          = color,
 			}
 			append(&tmp_quads, quad)
@@ -203,14 +203,11 @@ prepare :: proc(
 		case clay.RenderCommandType.Border:
 			render_data := render_command.renderData.border
 			cr := render_data.cornerRadius
+			//TODO dedicated border pipeline
 			quad := Quad {
 				position_scale = {bounds.x, bounds.y, bounds.width, bounds.height},
-				corner_radii   = {cr.topLeft, cr.topRight, cr.bottomRight, cr.bottomLeft},
-				//TODO: I was using a hack here to get the underlying color of the quad in the layout and then pass it into the
-				// right border color, but Clay got rid of multi color support for borders so I need to just make a dedicated border pipeline
-				color          = f32_color(
-					clay.Color{render_data.color.r, render_data.color.g, render_data.color.b, 0.0},
-				),
+				corner_radii   = {cr.bottomRight, cr.topRight, cr.bottomLeft, cr.topLeft},
+				color          = f32_color(clay.Color{0.0, 0.0, 0.0, 0.0}),
 				border_color   = f32_color(render_data.color),
 				// We only support one border width at the moment
 				border_width   = f32(render_data.width.top),

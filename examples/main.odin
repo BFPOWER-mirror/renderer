@@ -18,9 +18,9 @@ device: ^sdl.GPUDevice
 debug_enabled := false
 
 body_text := clay.TextElementConfig {
-	fontId             = renderer.JETBRAINS_MONO_REGULAR,
-	fontSize           = 44,
-	textColor          =  { 1.0, 1.0, 1.0, 1.0 },
+	fontId    = renderer.JETBRAINS_MONO_REGULAR,
+	fontSize  = 44,
+	textColor = {0.0, 0.0, 0.0, 255.0},
 }
 
 main :: proc() {
@@ -88,7 +88,7 @@ main :: proc() {
 		log.error("Failed to initialize SDL:", sdl.GetError())
 	}
 
-	window = sdl.CreateWindow("System Controller", WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_FLAGS)
+	window = sdl.CreateWindow("Test", WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_FLAGS)
 
 	if window == nil {
 		log.error("Failed to create window:", sdl.GetError())
@@ -142,7 +142,9 @@ main :: proc() {
 			os.exit(1)
 		}
 
-		if update(cmd_buffer, frame_time - last_frame_time) {
+		should_quit := update(cmd_buffer, frame_time - last_frame_time)
+
+		if should_quit {
 			log.debug("User command to quit")
 			break program
 		}
@@ -163,11 +165,8 @@ destroy :: proc() {
 update :: proc(cmd_buffer: ^sdl.GPUCommandBuffer, delta_time: u64) -> bool {
 	frame_time := f32(delta_time) / 1000.0
 	input := input()
-
-	render_cmds: clay.ClayArray(clay.RenderCommand) = layout()
-
+	render_cmds := layout()
 	renderer.prepare(device, window, cmd_buffer, &render_cmds, input.mouse_delta, frame_time)
-
 	return input.should_quit
 }
 
@@ -221,14 +220,32 @@ layout :: proc() -> clay.ClayArray(clay.RenderCommand) {
 			layoutDirection = .TopToBottom,
 			sizing = {clay.SizingGrow({}), clay.SizingGrow({})},
 			childAlignment = {x = .Center, y = .Center},
-			childGap = 16,
+			childGap = 32,
 		},
-		backgroundColor = {0.2, 0.2, 0.2, 1.0},
+		backgroundColor = {200.0, 200.0, 200.0, 255.0},
 	},
 	) {
-		clay.Text("3D SCENE", &body_text)
+		if clay.UI()(
+		{
+			id = clay.ID("RoundedRect"),
+			backgroundColor = {255.0, 100.0, 100.0, 255.0},
+			cornerRadius = clay.CornerRadius {
+				topLeft = 10,
+				topRight = 20,
+				bottomLeft = 40,
+				bottomRight = 0,
+			},
+			border = clay.BorderElementConfig {
+				color = {0.0, 0.0, 0.0, 255.0},
+				width = clay.BorderAll(5),
+			},
+			layout = {sizing = {clay.SizingFixed(240), clay.SizingFixed(80)}},
+		},
+		) {
+		}
+
+		clay.Text("Test Text", &body_text)
 	}
 
 	return clay.EndLayout()
 }
-
