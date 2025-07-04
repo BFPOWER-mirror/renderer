@@ -4,8 +4,8 @@ import "core:c"
 import "core:log"
 import "core:mem"
 import "core:os"
-import sdl_ttf "library:sdl3_ttf"
 import sdl "vendor:sdl3"
+import sdl_ttf "vendor:sdl3/ttf"
 
 JETBRAINS_MONO_REGULAR: u16 : 0
 JETBRAINS_MONO_BOLD: u16 : 1
@@ -45,7 +45,7 @@ get_font :: proc(id: u16, size: u16) -> ^sdl_ttf.Font {
 			os.exit(1)
 		}
 		font = f
-		sdl_ttf.SetFontSizeDPI(f, f32(size), 72 * i32(dpi_scaling), 72 * i32(dpi_scaling))
+		_ = sdl_ttf.SetFontSizeDPI(f, f32(size), 72 * i32(dpi_scaling), 72 * i32(dpi_scaling))
 		text_pipeline.fonts[id][size] = f
 	}
 
@@ -205,7 +205,7 @@ create_text_pipeline :: proc(device: ^sdl.GPUDevice, window: ^sdl.Window) -> Tex
 		log.error("Could not create text engine")
 		os.exit(1)
 	}
-	sdl_ttf.SetGPUTextEngineWinding(engine, .COUNTERCLOCKWISE)
+	sdl_ttf.SetGPUTextEngineWinding(engine, .COUNTER_CLOCKWISE)
 
 	// Create buffers
 	vertex_buffer := create_buffer(
@@ -248,11 +248,10 @@ upload_text :: proc(device: ^sdl.GPUDevice, pass: ^sdl.GPUCopyPass) {
 	for &text, index in tmp_text {
 		append(&instances, text.position)
 		data := sdl_ttf.GetGPUTextDrawData(text.ref)
-
 		for data != nil {
-			for i in 0 ..< data.num_verticies {
-				pos := data.vertex_positions[i]
-				uv := data.uvs[i]
+			for i in 0 ..< data.num_vertices {
+				pos := data.xy[i]
+				uv := data.uv[i]
 				color := text.color
 				append(&vertices, TextVert{{pos.x, -pos.y, uv.x, uv.y}, color})
 			}
@@ -421,7 +420,7 @@ draw_text :: proc(
 				)
 
 				index_offset += u32(data.num_indices)
-				vertex_offset += data.num_verticies
+				vertex_offset += data.num_vertices
 
 				data = data.next
 			}
