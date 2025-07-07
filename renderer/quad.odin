@@ -37,7 +37,6 @@ create_quad_pipeline :: proc(device: ^sdl.GPUDevice, window: ^sdl.Window) -> Qua
 	log.debug("Loaded", len(frag_raw), "frag bytes")
 	log.debug("ShaderType:", SHADER_TYPE)
 
-
 	vert_info := sdl.GPUShaderCreateInfo {
 		code_size           = len(vert_raw),
 		code                = raw_data(vert_raw),

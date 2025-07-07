@@ -1,11 +1,11 @@
 package renderer
 
+import clay "../clay"
 import "base:runtime"
 import "core:c"
 import "core:log"
 import "core:os"
 import "core:strings"
-import clay "library:clay"
 import sdl "vendor:sdl3"
 import sdl_ttf "vendor:sdl3/ttf"
 
@@ -25,8 +25,35 @@ quad_pipeline: QuadPipeline
 text_pipeline: TextPipeline
 odin_context: runtime.Context
 
-// TODO New layer for each z-index/batch
+// I need to make it so that I can
+// a) Add primitives directly to a layer
+// b) Create small nested clay-layouts that can be batched with other shit
+// Some colletion of items, where its just primtiives, but collections of primitives? And each collection has a type,
+// either raw or clay? Or something
+
+// Prepare - upload to GPU
+// With clay commands, this requires converting to my custom primitive types
+// With raw commands, this would require no conversion
+// Need to go from UI declaration -> processing render cmds
+
+// I want to process & upload in the same loop, don't want to add an additional pass where I transform
+// clay cmds -> my primitives
+
+// 1) I need to be able to process all clay cmds & all raw primitive cmds in a single iteration
+// 2) I need to be able to define (at a layout level) which primitives can be rendered in the same batch
+//
+// Some kind of queue? Each UI element adds to a temp queue that is reset every frame
+// Queue is like
+//  [ chunk of primitives ] [ chunk of clay primitives ] [ new layer indicator ] [ chunk ]
+Rectangle :: struct {
+	x: f32,
+	y: f32,
+	w: f32,
+	h: f32,
+}
+
 Layer :: struct {
+	bounds:              Rectangle,
 	quad_instance_start: u32,
 	quad_len:            u32,
 	text_instance_start: u32,
@@ -35,6 +62,7 @@ Layer :: struct {
 	text_vertex_len:     u32,
 	text_index_start:    u32,
 	text_index_len:      u32,
+	curr_scissor_index:  u32,
 	scissors:            [dynamic]Scissor,
 }
 
@@ -68,6 +96,7 @@ init :: proc(
 	text_pipeline = create_text_pipeline(device, window)
 }
 
+@(private = "file")
 clay_error_handler :: proc "c" (errorData: clay.ErrorData) {
 	context = odin_context
 	log.error("Clay error:", errorData.errorType, errorData.errorText)
@@ -95,26 +124,9 @@ destroy :: proc(device: ^sdl.GPUDevice) {
 	destroy_text_pipeline(device)
 }
 
-/// Upload data to the GPU
-prepare :: proc(
-	device: ^sdl.GPUDevice,
-	window: ^sdl.Window,
-	cmd_buffer: ^sdl.GPUCommandBuffer,
-	render_commands: ^clay.ClayArray(clay.RenderCommand),
-	mouse_delta: [2]f32,
-	frame_time: f32,
-) {
-	mouse_x, mouse_y: f32
-	mouse_flags := sdl.GetMouseState(&mouse_x, &mouse_y)
-	// Currently MacOS blocks main thread when resizing, this will be fixed with next SDL3 release
-	window_w, window_h: c.int
-	window_size := sdl.GetWindowSize(window, &window_w, &window_h)
-
-	// Update clay internals
-	clay.SetPointerState(clay.Vector2{mouse_x, mouse_y}, .LEFT in mouse_flags)
-	clay.UpdateScrollContainers(true, transmute(clay.Vector2)mouse_delta, frame_time)
-	clay.SetLayoutDimensions({f32(window_w), f32(window_h)})
-
+/// Sets up renderer to begin upload to the GPU. Returns starting `Layer` to begin processing primitives for
+begin_prepare :: proc() -> Layer {
+	// Prepare to upload to GPU
 	clear(&layers)
 	clear(&tmp_quads)
 	clear(&tmp_text)
@@ -125,12 +137,82 @@ prepare :: proc(
 	layer := Layer {
 		scissors = make([dynamic]Scissor, 0, 10, context.temp_allocator),
 	}
+
+	return layer
+}
+
+/// Creates a new layer, appending the old one to `layers`
+new_layer :: proc(layer: ^Layer, bounds: Rectangle) -> Layer {
+	append(&layers, layer^)
+	layer := Layer {
+		bounds   = bounds,
+		scissors = make([dynamic]Scissor, 0, 10, context.temp_allocator),
+	}
+
+	return layer
+}
+
+end_prepare :: proc(device: ^sdl.GPUDevice, cmd_buffer: ^sdl.GPUCommandBuffer, layer: ^Layer) {
+	// Commit last layer worked on
+	append(&layers, layer^)
+
+	// Upload primitives to GPU
+	copy_pass := sdl.BeginGPUCopyPass(cmd_buffer)
+	upload_quads(device, copy_pass)
+	upload_text(device, copy_pass)
+	sdl.EndGPUCopyPass(copy_pass)
+}
+
+// ===== Built-in primitive processing =====
+//prepare_batch :: proc(
+//	device: ^sdl.GPUDevice,
+//	window: ^sdl.Window,
+//	cmd_buffer: ^sdl.GPUCommandBuffer,
+//	layer: ^Layer,
+//	primitives: ^[]Primitive,
+//) {
+//	scissor := Scissor{}
+//
+//
+//}
+
+// ====== Clay-specific processing ======
+ClayBatch :: struct {
+	bounds: Rectangle,
+	cmds:   clay.ClayArray(clay.RenderCommand),
+}
+
+/// Upload data to the GPU
+prepare_clay_batch :: proc(
+	device: ^sdl.GPUDevice,
+	window: ^sdl.Window,
+	cmd_buffer: ^sdl.GPUCommandBuffer,
+	layer: ^Layer,
+	mouse_pos: [2]f32,
+	mouse_flags: sdl.MouseButtonFlags,
+	mouse_wheel_delta: [2]f32,
+	frame_time: f32,
+	batch: ^ClayBatch,
+) {
+	// Update clay internals
+	clay.SetPointerState(
+		clay.Vector2{mouse_pos.x - layer.bounds.x, mouse_pos.y - layer.bounds.y},
+		.LEFT in mouse_flags,
+	)
+	clay.UpdateScrollContainers(true, transmute(clay.Vector2)mouse_wheel_delta, frame_time)
+
 	scissor := Scissor{}
 
 	// Parse render commands
-	for i in 0 ..< int(render_commands.length) {
-		render_command := clay.RenderCommandArray_Get(render_commands, cast(i32)i)
-		bounds := render_command.boundingBox
+	for i in 0 ..< int(batch.cmds.length) {
+		render_command := clay.RenderCommandArray_Get(&batch.cmds, cast(i32)i)
+		// Translate bounding box of the primitive by the layer position
+		bounds := Rectangle {
+			x = render_command.boundingBox.x + layer.bounds.x,
+			y = render_command.boundingBox.y + layer.bounds.y,
+			w = render_command.boundingBox.width,
+			h = render_command.boundingBox.height,
+		}
 
 		switch (render_command.commandType) {
 		case clay.RenderCommandType.None:
@@ -173,27 +255,28 @@ prepare :: proc(
 			bounds := sdl.Rect {
 				c.int(bounds.x * dpi_scaling),
 				c.int(bounds.y * dpi_scaling),
-				c.int(bounds.width * dpi_scaling),
-				c.int(bounds.height * dpi_scaling),
+				c.int(bounds.w * dpi_scaling),
+				c.int(bounds.h * dpi_scaling),
 			}
-			new := new_scissor(&scissor)
 			if scissor.quad_len != 0 || scissor.text_len != 0 {
+				new := new_scissor(&scissor)
 				append(&layer.scissors, scissor)
+				scissor = new
 			}
-			scissor = new
+
 			scissor.bounds = bounds
 		case clay.RenderCommandType.ScissorEnd:
-			new := new_scissor(&scissor)
 			if scissor.quad_len != 0 || scissor.text_len != 0 {
+				new := new_scissor(&scissor)
 				append(&layer.scissors, scissor)
+				scissor = new
 			}
-			scissor = new
 		case clay.RenderCommandType.Rectangle:
 			render_data := render_command.renderData.rectangle
 			color := f32_color(render_data.backgroundColor)
 			cr := render_data.cornerRadius
 			quad := Quad {
-				position_scale = {bounds.x, bounds.y, bounds.width, bounds.height},
+				position_scale = {bounds.x, bounds.y, bounds.w, bounds.h},
 				corner_radii   = {cr.bottomRight, cr.topRight, cr.bottomLeft, cr.topLeft},
 				color          = color,
 			}
@@ -205,7 +288,7 @@ prepare :: proc(
 			cr := render_data.cornerRadius
 			//TODO dedicated border pipeline
 			quad := Quad {
-				position_scale = {bounds.x, bounds.y, bounds.width, bounds.height},
+				position_scale = {bounds.x, bounds.y, bounds.w, bounds.h},
 				corner_radii   = {cr.bottomRight, cr.topRight, cr.bottomLeft, cr.topLeft},
 				color          = f32_color(clay.Color{0.0, 0.0, 0.0, 0.0}),
 				border_color   = f32_color(render_data.color),
@@ -221,15 +304,9 @@ prepare :: proc(
 		}
 	}
 
-	//TODO start new layers with z-index changes
-	append(&layer.scissors, scissor)
-	append(&layers, layer)
-
-	// Upload primitives to GPU
-	copy_pass := sdl.BeginGPUCopyPass(cmd_buffer)
-	upload_quads(device, copy_pass)
-	upload_text(device, copy_pass)
-	sdl.EndGPUCopyPass(copy_pass)
+	if scissor.quad_len != 0 || scissor.text_len != 0 {
+		append(&layer.scissors, scissor)
+	}
 }
 
 /// Render primitives
