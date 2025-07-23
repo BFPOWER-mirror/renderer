@@ -5,8 +5,6 @@ import "core:mem"
 import "core:os"
 import sdl "vendor:sdl3"
 
-tmp_quads: [dynamic]Quad
-
 QuadPipeline :: struct {
 	instance_buffer: Buffer,
 	num_instances:   u32,
@@ -14,12 +12,30 @@ QuadPipeline :: struct {
 }
 
 Quad :: struct {
-	position_scale:     [4]f32,
-	corner_radii:       [4]f32,
-	color:              [4]f32,
-	border_color:       [4]f32,
-	border_width:       f32,
-	_:                  [3]f32,
+	position_scale: [4]f32,
+	corner_radii:   [4]f32,
+	color:          [4]f32,
+	border_color:   [4]f32,
+	border_width:   f32,
+	_:              [3]f32,
+}
+
+quad :: proc(
+	pos: [2]f32,
+	size: [2]f32,
+	color: [4]f32,
+	corner_radii := [4]f32{0, 0, 0, 0},
+	border_color := [4]f32{0, 0, 0, 0},
+	border_width: f32 = 0,
+) -> Quad {
+	return Quad {
+		{pos.x, pos.y, size.x, size.y},
+		corner_radii,
+		color,
+		border_color,
+		border_width,
+		{0, 0, 0},
+	}
 }
 
 @(private)
@@ -47,11 +63,11 @@ create_quad_pipeline :: proc(device: ^sdl.GPUDevice, window: ^sdl.Window) -> Qua
 	}
 
 	frag_info := sdl.GPUShaderCreateInfo {
-		code_size   = len(frag_raw),
-		code        = raw_data(frag_raw),
-		entrypoint  = ENTRY_POINT,
-		format      = SHADER_TYPE,
-		stage       = sdl.GPUShaderStage.FRAGMENT,
+		code_size  = len(frag_raw),
+		code       = raw_data(frag_raw),
+		entrypoint = ENTRY_POINT,
+		format     = SHADER_TYPE,
+		stage      = sdl.GPUShaderStage.FRAGMENT,
 	}
 
 	vert_shader := sdl.CreateGPUShader(device, vert_info)
@@ -151,7 +167,7 @@ create_quad_pipeline :: proc(device: ^sdl.GPUDevice, window: ^sdl.Window) -> Qua
 	instance_buffer := create_buffer(
 		device,
 		size_of(Quad) * BUFFER_INIT_SIZE,
-		sdl.GPUBufferUsageFlags { .VERTEX },
+		sdl.GPUBufferUsageFlags{.VERTEX},
 	)
 
 	pipeline := QuadPipeline{instance_buffer, BUFFER_INIT_SIZE, sdl_pipeline}
@@ -162,10 +178,11 @@ create_quad_pipeline :: proc(device: ^sdl.GPUDevice, window: ^sdl.Window) -> Qua
 
 @(private)
 upload_quads :: proc(device: ^sdl.GPUDevice, pass: ^sdl.GPUCopyPass) {
+	using global
 	num_quads := u32(len(tmp_quads))
 	size := num_quads * size_of(Quad)
 
-	resize_buffer(device, &quad_pipeline.instance_buffer, size, sdl.GPUBufferUsageFlags { .VERTEX })
+	resize_buffer(device, &quad_pipeline.instance_buffer, size, sdl.GPUBufferUsageFlags{.VERTEX})
 
 	// Write data
 	i_array := sdl.MapGPUTransferBuffer(device, quad_pipeline.instance_buffer.transfer, false)
@@ -192,6 +209,8 @@ draw_quads :: proc(
 	layer: ^Layer,
 	load_op: sdl.GPULoadOp,
 ) {
+	using global
+
 	if layer.quad_len == 0 {
 		return
 	}
@@ -219,17 +238,12 @@ draw_quads :: proc(
 
 	quad_offset := layer.quad_instance_start
 
-	for &scissor, index in layer.scissors {
+	for &scissor, index in scissors[layer.scissor_start:][:layer.scissor_len] {
 		if scissor.quad_len == 0 {
 			continue
 		}
 
-		if scissor.bounds.w == 0 || scissor.bounds.h == 0 {
-			sdl.SetGPUScissor(render_pass, sdl.Rect{0, 0, i32(swapchain_w), i32(swapchain_h)})
-		} else {
-			sdl.SetGPUScissor(render_pass, scissor.bounds)
-		}
-
+		sdl.SetGPUScissor(render_pass, scissor.bounds)
 		sdl.DrawGPUPrimitives(render_pass, 6, scissor.quad_len, 0, quad_offset)
 		quad_offset += scissor.quad_len
 	}
@@ -237,6 +251,7 @@ draw_quads :: proc(
 }
 
 destroy_quad_pipeline :: proc(device: ^sdl.GPUDevice) {
+	using global
 	destroy_buffer(device, &quad_pipeline.instance_buffer)
 	sdl.ReleaseGPUGraphicsPipeline(device, quad_pipeline.sdl_pipeline)
 }

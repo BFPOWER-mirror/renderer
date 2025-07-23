@@ -12,8 +12,6 @@ JETBRAINS_MONO_BOLD: u16 : 1
 NUM_FONTS :: 2
 MAX_FONT_SIZE :: 120
 
-tmp_text: [dynamic]Text
-
 @(private = "file")
 jetbrains_mono_regular := #load("res/fonts/JetBrainsMono-Regular.ttf")
 @(private = "file")
@@ -31,7 +29,7 @@ TextPipeline :: struct {
 }
 
 get_font :: proc(id: u16, size: u16) -> ^sdl_ttf.Font {
-	font := text_pipeline.fonts[id > 1 ? 0 : id][size > 0 ? size : 16]
+	font := global.text_pipeline.fonts[id > 1 ? 0 : id][size > 0 ? size : 16]
 
 	if font == nil {
 		log.debug("Font not found for size", size, "+ adding")
@@ -45,8 +43,13 @@ get_font :: proc(id: u16, size: u16) -> ^sdl_ttf.Font {
 			os.exit(1)
 		}
 		font = f
-		_ = sdl_ttf.SetFontSizeDPI(f, f32(size), 72 * i32(dpi_scaling), 72 * i32(dpi_scaling))
-		text_pipeline.fonts[id][size] = f
+		_ = sdl_ttf.SetFontSizeDPI(
+			f,
+			f32(size),
+			72 * i32(global.dpi_scaling),
+			72 * i32(global.dpi_scaling),
+		)
+		global.text_pipeline.fonts[id][size] = f
 	}
 
 	return font
@@ -241,11 +244,14 @@ create_text_pipeline :: proc(device: ^sdl.GPUDevice, window: ^sdl.Window) -> Tex
 
 @(private)
 upload_text :: proc(device: ^sdl.GPUDevice, pass: ^sdl.GPUCopyPass) {
+	using global
+
+	// TODO maybe don't use tmp here
 	vertices := make([dynamic]TextVert, 0, BUFFER_INIT_SIZE, context.temp_allocator)
 	indices := make([dynamic]c.int, 0, BUFFER_INIT_SIZE, context.temp_allocator)
 	instances := make([dynamic][2]f32, 0, BUFFER_INIT_SIZE, context.temp_allocator)
 
-	for &text, index in tmp_text {
+	for &text, index in global.tmp_text {
 		append(&instances, text.position)
 		data := sdl_ttf.GetGPUTextDrawData(text.ref)
 		for data != nil {
@@ -344,6 +350,7 @@ draw_text :: proc(
 	swapchain_h: u32,
 	layer: ^Layer,
 ) {
+	using global
 	if layer.text_instance_len == 0 {
 		return
 	}
@@ -382,16 +389,12 @@ draw_text :: proc(
 	vertex_offset: i32 = i32(layer.text_vertex_start)
 	instance_offset: u32 = layer.text_instance_start
 
-	for &scissor, index in layer.scissors {
+	for &scissor, index in scissors[layer.scissor_start:][:layer.scissor_len] {
 		if scissor.text_len == 0 {
 			continue
 		}
 
-		if scissor.bounds.w == 0 || scissor.bounds.h == 0 {
-			sdl.SetGPUScissor(render_pass, sdl.Rect{0, 0, i32(swapchain_w), i32(swapchain_h)})
-		} else {
-			sdl.SetGPUScissor(render_pass, scissor.bounds)
-		}
+		sdl.SetGPUScissor(render_pass, scissor.bounds)
 
 		for &text in layer_text[scissor.text_start:scissor.text_start + scissor.text_len] {
 			data := sdl_ttf.GetGPUTextDrawData(text.ref)
@@ -433,7 +436,10 @@ draw_text :: proc(
 }
 
 destroy_text_pipeline :: proc(device: ^sdl.GPUDevice) {
+	using global
 	destroy_buffer(device, &text_pipeline.vertex_buffer)
 	destroy_buffer(device, &text_pipeline.index_buffer)
+	destroy_buffer(device, &text_pipeline.instance_buffer)
+	delete(text_pipeline.cache)
 	sdl.ReleaseGPUGraphicsPipeline(device, text_pipeline.sdl_pipeline)
 }
