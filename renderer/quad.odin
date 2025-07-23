@@ -211,7 +211,7 @@ draw_quads :: proc(
 ) {
 	using global
 
-	if layer.quad_len == 0 {
+	if layer.quad_instance_len == 0 {
 		return
 	}
 

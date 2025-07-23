@@ -321,6 +321,10 @@ layout :: proc(layer: ^renderer.Layer) {
 		border_color = {0, 0, 0, 1},
 		border_width = 10,
 	)
-
 	renderer.prepare_quad(layer, test_quad)
+
+	text_ok, text := renderer.text(0, "Raw Text", {bounds.x + 80, bounds.y + 80})
+	if text_ok {
+		renderer.prepare_text(layer, text)
+	}
 }

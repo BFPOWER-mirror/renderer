@@ -61,6 +61,38 @@ Text :: struct {
 	color:    [4]f32,
 }
 
+text :: proc(
+	id: u32,
+	txt: cstring,
+	pos: [2]f32,
+	color: [4]f32 = {0.0, 0.0, 0.0, 1.0},
+	font_id: u16 = JETBRAINS_MONO_REGULAR,
+	font_size: u16 = 44,
+) -> (bool, Text) {
+	using global
+
+	sdl_text := text_pipeline.cache[id]
+	if sdl_text == nil {
+		sdl_text = sdl_ttf.CreateText(text_pipeline.engine, get_font(font_id, font_size), txt, 0)
+		text_pipeline.cache[id] = sdl_text
+	} else {
+		//TODO if IDs are always unique and never change the underlying text
+		// can get rid of this
+		_ = sdl_ttf.SetTextString(sdl_text, txt, 0)
+	}
+
+	if sdl_text == nil {
+		log.error("Could not create SDL text:", sdl.GetError())
+		return false, Text {}
+	} else {
+		return true, Text {
+			sdl_text,
+			pos,
+			color,
+		}
+	}
+}
+
 // For upload
 TextVert :: struct {
 	pos_uv: [4]f32,
@@ -383,9 +415,8 @@ draw_text :: proc(
 
 	atlas: ^sdl.GPUTexture
 
-	layer_text := tmp_text[layer.text_instance_start:layer.text_instance_start +
-	layer.text_instance_len]
-	index_offset: u32 = layer.text_instance_start
+	layer_text := tmp_text[layer.text_instance_start:][:layer.text_instance_len]
+	index_offset: u32 = layer.text_index_start
 	vertex_offset: i32 = i32(layer.text_vertex_start)
 	instance_offset: u32 = layer.text_instance_start
 
@@ -396,7 +427,7 @@ draw_text :: proc(
 
 		sdl.SetGPUScissor(render_pass, scissor.bounds)
 
-		for &text in layer_text[scissor.text_start:scissor.text_start + scissor.text_len] {
+		for &text in layer_text[scissor.text_start:][:scissor.text_len] {
 			data := sdl_ttf.GetGPUTextDrawData(text.ref)
 
 			for data != nil {

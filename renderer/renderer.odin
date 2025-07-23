@@ -33,6 +33,7 @@ Global :: struct {
 	tmp_quads:        [dynamic]Quad,
 	max_tmp_quads:    int,
 	clay_mem:         [^]u8,
+	clay_z_index:     i16,
 	odin_context:     runtime.Context,
 	quad_pipeline:    QuadPipeline,
 	text_pipeline:    TextPipeline,
@@ -68,6 +69,7 @@ clear_global :: proc() {
 	using global
 
 	curr_layer_index = 0
+	clay_z_index = 0
 	clear(&layers)
 	clear(&scissors)
 	clear(&tmp_text)
@@ -86,7 +88,7 @@ Rectangle :: struct {
 Layer :: struct {
 	bounds:              Rectangle,
 	quad_instance_start: u32,
-	quad_len:            u32,
+	quad_instance_len:   u32,
 	text_instance_start: u32,
 	text_instance_len:   u32,
 	text_vertex_start:   u32,
@@ -184,19 +186,20 @@ begin_prepare :: proc(bounds: Rectangle) -> ^Layer {
 }
 
 /// Creates a new layer
-new_layer :: proc(old_layer: ^Layer, bounds: Rectangle) -> ^Layer {
+new_layer :: proc(prev_layer: ^Layer, bounds: Rectangle) -> ^Layer {
 	using global
 	layer := Layer {
 		bounds              = bounds,
-		quad_instance_start = old_layer.quad_instance_start + old_layer.quad_len,
-		text_instance_start = old_layer.text_instance_start + old_layer.text_instance_len,
-		text_vertex_start   = old_layer.text_vertex_start + old_layer.text_vertex_len,
-		text_index_start    = old_layer.text_index_start + old_layer.text_instance_len,
-		scissor_start       = old_layer.scissor_start + old_layer.scissor_len,
+		quad_instance_start = prev_layer.quad_instance_start + prev_layer.quad_instance_len,
+		text_instance_start = prev_layer.text_instance_start + prev_layer.text_instance_len,
+		text_vertex_start   = prev_layer.text_vertex_start + prev_layer.text_vertex_len,
+		text_index_start    = prev_layer.text_index_start + prev_layer.text_index_len,
+		scissor_start       = prev_layer.scissor_start + prev_layer.scissor_len,
 		scissor_len         = 1,
 	}
 	append(&layers, layer)
 	curr_layer_index += 1
+	log.debug("Added new layer; curr index", curr_layer_index)
 
 	scissor := Scissor {
 		bounds = sdl.Rect {
@@ -227,8 +230,24 @@ prepare_quad :: proc(layer: ^Layer, quad: Quad) {
 	using global
 
 	append(&tmp_quads, quad)
-	layer.quad_len += 1
+	layer.quad_instance_len += 1
 	scissors[layer.scissor_start + layer.scissor_len - 1].quad_len += 1
+}
+
+// TODO need to make sure no overlap with clay render command IDs
+prepare_text :: proc(layer: ^Layer, text: Text) {
+	using global
+
+	data := sdl_ttf.GetGPUTextDrawData(text.ref)
+	if data == nil {
+		log.error("Failed to find GPUTextDrawData for sdl_text")
+	}
+
+	append(&tmp_text, text)
+	layer.text_instance_len += 1
+	layer.text_vertex_len += u32(data.num_vertices)
+	layer.text_index_len += u32(data.num_indices)
+	scissors[layer.scissor_start + layer.scissor_len - 1].text_len += 1
 }
 
 // ====== Clay-specific processing ======
@@ -239,7 +258,7 @@ ClayBatch :: struct {
 
 /// Upload data to the GPU
 prepare_clay_batch :: proc(
-	layer: ^Layer,
+	base_layer: ^Layer,
 	mouse_pos: [2]f32,
 	mouse_flags: sdl.MouseButtonFlags,
 	mouse_wheel_delta: [2]f32,
@@ -250,20 +269,35 @@ prepare_clay_batch :: proc(
 
 	// Update clay internals
 	clay.SetPointerState(
-		clay.Vector2{mouse_pos.x - layer.bounds.x, mouse_pos.y - layer.bounds.y},
+		clay.Vector2{mouse_pos.x - base_layer.bounds.x, mouse_pos.y - base_layer.bounds.y},
 		.LEFT in mouse_flags,
 	)
 	clay.UpdateScrollContainers(true, transmute(clay.Vector2)mouse_wheel_delta, frame_time)
 
+	layer := base_layer
+
 	// Parse render commands
 	for i in 0 ..< int(batch.cmds.length) {
 		render_command := clay.RenderCommandArray_Get(&batch.cmds, cast(i32)i)
+
 		// Translate bounding box of the primitive by the layer position
 		bounds := Rectangle {
 			x = render_command.boundingBox.x + layer.bounds.x,
 			y = render_command.boundingBox.y + layer.bounds.y,
 			w = render_command.boundingBox.width,
 			h = render_command.boundingBox.height,
+		}
+
+		if render_command.zIndex > clay_z_index {
+			log.debug(
+				"Higher zIndex found, creating new layer & setting z_index to",
+				render_command.zIndex,
+			)
+			layer = new_layer(layer, bounds)
+			// Update bounds to new layer offset
+			bounds.x = render_command.boundingBox.x + layer.bounds.x
+			bounds.y = render_command.boundingBox.y + layer.bounds.y
+			clay_z_index = render_command.zIndex
 		}
 
 		switch (render_command.commandType) {
@@ -347,7 +381,7 @@ prepare_clay_batch :: proc(
 			}
 			append(&tmp_quads, quad)
 
-			layer.quad_len += 1
+			layer.quad_instance_len += 1
 			scissors[layer.scissor_start + layer.scissor_len - 1].quad_len += 1
 		case clay.RenderCommandType.Border:
 			render_data := render_command.renderData.border
@@ -363,7 +397,7 @@ prepare_clay_batch :: proc(
 			// Technically these should be drawn on top of everything else including children, but
 			// for our use case we can just chuck these in with the quad pipeline
 			append(&tmp_quads, quad)
-			layer.quad_len += 1
+			layer.quad_instance_len += 1
 			scissors[layer.scissor_start + layer.scissor_len - 1].quad_len += 1
 		case clay.RenderCommandType.Custom:
 		}
@@ -386,6 +420,7 @@ draw :: proc(device: ^sdl.GPUDevice, window: ^sdl.Window, cmd_buffer: ^sdl.GPUCo
 	}
 
 	for &layer, index in layers {
+		log.debug("Drawing layer", index)
 		draw_quads(
 			device,
 			window,
