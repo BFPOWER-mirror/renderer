@@ -1,12 +1,12 @@
 package main
 
+import clay "../clay"
 import "../renderer"
 import "core:c"
 import "core:fmt"
 import "core:log"
 import "core:mem"
 import "core:os"
-import clay "library:clay"
 import sdl "vendor:sdl3"
 
 WINDOW_WIDTH :: 1024
@@ -24,8 +24,6 @@ body_text := clay.TextElementConfig {
 }
 
 main :: proc() {
-	defer destroy()
-
 	when ODIN_DEBUG == true {
 		context.logger = log.create_console_logger(lowest = .Debug)
 
@@ -153,9 +151,12 @@ main :: proc() {
 
 		last_frame_time = frame_time
 	}
+
+	destroy()
 }
 
 destroy :: proc() {
+	free_all(context.temp_allocator)
 	renderer.destroy(device)
 	sdl.ReleaseWindowFromGPUDevice(device, window)
 	sdl.DestroyWindow(window)
@@ -165,8 +166,47 @@ destroy :: proc() {
 update :: proc(cmd_buffer: ^sdl.GPUCommandBuffer, delta_time: u64) -> bool {
 	frame_time := f32(delta_time) / 1000.0
 	input := input()
-	render_cmds := layout()
-	renderer.prepare(device, window, cmd_buffer, &render_cmds, input.mouse_delta, frame_time)
+	mouse_x, mouse_y: f32
+	mouse_flags := sdl.GetMouseState(&mouse_x, &mouse_y)
+	width, height: c.int
+	sdl.GetWindowSize(window, &width, &height)
+	window_bounds := renderer.Rectangle {
+		x = 0.0,
+		y = 0.0,
+		w = f32(width),
+		h = f32(height),
+	}
+
+	layer := renderer.begin_prepare(window_bounds)
+	// ===== Begin processing primitives for GPU upload =====
+	// Everything after begin_prepare() is uploaded in-order. We pass the layer down
+	// until we need a new one, after which we call new_layer()
+
+	// Process primitives on this layer
+	layout(layer)
+
+	// Process clay-specific primitives
+	clay_layer_bounds := renderer.Rectangle {
+		x = f32(width) / 2.0,
+		y = 0.0,
+		w = f32(width) / 2.0,
+		h = f32(height),
+	}
+	// Create a new layer, because these two scenes cannot be renderer in the same batch due to overlap
+	layer = renderer.new_layer(layer, clay_layer_bounds)
+	clay_batch := clay_layout(clay_layer_bounds)
+	renderer.prepare_clay_batch(
+		layer,
+		{mouse_x, mouse_y},
+		mouse_flags,
+		input.mouse_delta,
+		frame_time,
+		&clay_batch,
+	)
+
+	// This uploads the primitive data to the GPU
+	renderer.end_prepare(device, cmd_buffer)
+
 	return input.should_quit
 }
 
@@ -210,7 +250,8 @@ draw :: proc(cmd_buffer: ^sdl.GPUCommandBuffer) {
 	}
 }
 
-layout :: proc() -> clay.ClayArray(clay.RenderCommand) {
+clay_layout :: proc(bounds: renderer.Rectangle) -> renderer.ClayBatch {
+	clay.SetLayoutDimensions(clay.Dimensions{bounds.w, bounds.h})
 	clay.BeginLayout()
 
 	if clay.UI()(
@@ -222,7 +263,7 @@ layout :: proc() -> clay.ClayArray(clay.RenderCommand) {
 			childAlignment = {x = .Center, y = .Center},
 			childGap = 32,
 		},
-		backgroundColor = {200.0, 200.0, 200.0, 255.0},
+		backgroundColor = {200.0, 200.0, 200.0, 100.0},
 	},
 	) {
 		if clay.UI()(
@@ -244,8 +285,46 @@ layout :: proc() -> clay.ClayArray(clay.RenderCommand) {
 		) {
 		}
 
+		if clay.UI()(
+		{
+			id = clay.ID("RoundedRect2"),
+			backgroundColor = {255.0, 100.0, 100.0, 255.0},
+			cornerRadius = clay.CornerRadius {
+				topLeft = 10,
+				topRight = 20,
+				bottomLeft = 40,
+				bottomRight = 0,
+			},
+			border = clay.BorderElementConfig {
+				color = {0.0, 0.0, 0.0, 255.0},
+				width = clay.BorderAll(5),
+			},
+			layout = {sizing = {clay.SizingFixed(240), clay.SizingFixed(80)}},
+		},
+		) {
+		}
+
 		clay.Text("Test Text", &body_text)
 	}
 
-	return clay.EndLayout()
+	return renderer.ClayBatch{bounds, clay.EndLayout()}
+}
+
+layout :: proc(layer: ^renderer.Layer) {
+	bounds := layer.bounds
+
+	test_quad := renderer.quad(
+		pos = {bounds.x + 200, bounds.y + 200},
+		size = {bounds.w / 2.0, bounds.h / 2.0},
+		color = {0.2, 0.2, 0.8, 1},
+		corner_radii = {5, 10, 0, 20},
+		border_color = {0, 0, 0, 1},
+		border_width = 10,
+	)
+	renderer.prepare_quad(layer, test_quad)
+
+	text_ok, text := renderer.text(0, "Raw Text", {bounds.x + 80, bounds.y + 80})
+	if text_ok {
+		renderer.prepare_text(layer, text)
+	}
 }
