@@ -13,8 +13,8 @@ fi
 
 # Convert GLSL to SPIRV
 echo "Converting GLSL shaders to SPIRV..."
-mkdir -p renderer/res/shaders/compiled
-cd renderer/res/shaders/raw || exit
+mkdir -p res/shaders/compiled
+cd res/shaders/raw || exit
 glslangValidator -V quad.vert -o ../compiled/quad.vert.spv
 glslangValidator -V quad.frag -o ../compiled/quad.frag.spv
 glslangValidator -V text.vert -o ../compiled/text.vert.spv
